@@ -29,8 +29,61 @@ function Read-Utf8File([string]$Path) {
     return [System.IO.File]::ReadAllText($Path, $utf8NoBom).Replace("`r`n", "`n")
 }
 
-function Write-Utf8File([string]$Path, [string]$Content) {
-    [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
+function Install-LocaleFiles([array]$Updates) {
+    $backupDirectory = [IO.Path]::GetFullPath((Join-Path $i18nDir ('.ko-install-' + [guid]::NewGuid().ToString('N'))))
+    $targetDirectory = [IO.Path]::GetFullPath($i18nDir)
+    if (-not $backupDirectory.StartsWith($targetDirectory + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Backup directory is outside the localization target.'
+    }
+    [IO.Directory]::CreateDirectory($backupDirectory) | Out-Null
+    $attempted = [Collections.Generic.List[object]]::new()
+    $keepBackup = $false
+    try {
+        # Capture every previous file before writing any registration file.
+        for ($index = 0; $index -lt $Updates.Count; $index++) {
+            $update = $Updates[$index]
+            $update | Add-Member -NotePropertyName Backup -NotePropertyValue (Join-Path $backupDirectory "$index.bin")
+            $exists = Test-Path -LiteralPath $update.Path
+            if ($exists -and -not (Test-Path -LiteralPath $update.Path -PathType Leaf)) {
+                throw "Destination is not a regular file: $($update.Path)"
+            }
+            $update | Add-Member -NotePropertyName HadPrevious -NotePropertyValue $exists
+            if ($exists) { [IO.File]::WriteAllBytes($update.Backup, [IO.File]::ReadAllBytes($update.Path)) }
+        }
+        $Updates | Select-Object Path, Backup, HadPrevious | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $backupDirectory 'recovery.json') -Encoding UTF8
+        try {
+            foreach ($update in $Updates) {
+                # A failed write can be partial, so include the attempted file.
+                $attempted.Add($update)
+                [IO.File]::WriteAllBytes($update.Path, $update.Bytes)
+            }
+        } catch {
+            $installError = $_
+            $restoreFailures = [Collections.Generic.List[string]]::new()
+            for ($index = $attempted.Count - 1; $index -ge 0; $index--) {
+                $update = $attempted[$index]
+                try {
+                    if ($update.HadPrevious) {
+                        $previous = [IO.File]::ReadAllBytes($update.Backup)
+                        $unchanged = [IO.File]::Exists($update.Path) -and ([Convert]::ToBase64String([IO.File]::ReadAllBytes($update.Path)) -eq [Convert]::ToBase64String($previous))
+                        if (-not $unchanged) { [IO.File]::WriteAllBytes($update.Path, $previous) }
+                    } else {
+                        [IO.File]::Delete($update.Path)
+                    }
+                } catch { $restoreFailures.Add($update.Path) }
+            }
+            if ($restoreFailures.Count) {
+                $keepBackup = $true
+                throw "Installation failed and restoration was incomplete. Previous files and recovery.json are preserved at: $backupDirectory"
+            }
+            throw $installError
+        }
+    } finally {
+        if (-not $keepBackup) {
+            if (-not $backupDirectory.StartsWith($targetDirectory + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe backup cleanup.' }
+            Remove-Item -LiteralPath $backupDirectory -Recurse -Force
+        }
+    }
 }
 
 function Replace-ExactOnce {
@@ -108,13 +161,16 @@ if (Test-Path -LiteralPath $paths.LanguageTests -PathType Leaf) {
 
 $applied = $false
 if ($PSCmdlet.ShouldProcess($i18nDir, 'Install the Korean locale and register it with Hermes Desktop')) {
-    Write-Utf8File $paths.Types $types
-    Write-Utf8File $paths.Catalog $catalog
-    Write-Utf8File $paths.Languages $languages
-    [System.IO.File]::Copy($sourceKo, $paths.Locale, $true)
+    $updates = @(
+        [pscustomobject]@{ Path = $paths.Types; Bytes = $utf8NoBom.GetBytes($types) }
+        [pscustomobject]@{ Path = $paths.Catalog; Bytes = $utf8NoBom.GetBytes($catalog) }
+        [pscustomobject]@{ Path = $paths.Languages; Bytes = $utf8NoBom.GetBytes($languages) }
+        [pscustomobject]@{ Path = $paths.Locale; Bytes = [IO.File]::ReadAllBytes($sourceKo) }
+    )
     if ($null -ne $tests) {
-        Write-Utf8File $paths.LanguageTests $tests
+        $updates += [pscustomobject]@{ Path = $paths.LanguageTests; Bytes = $utf8NoBom.GetBytes($tests) }
     }
+    Install-LocaleFiles $updates
     $applied = $true
 }
 

@@ -99,3 +99,9 @@ upstream-lock.json              고정된 업스트림 리비전
 ## 라이선스 및 고지
 
 이 프로젝트는 [MIT License](LICENSE)로 배포됩니다. 원본 Hermes Agent 역시 MIT 라이선스이며, Hermes 및 관련 상표는 각 권리자에게 있습니다. 이 저장소는 Nous Research의 공식 배포판이 아닌 독립적인 커뮤니티 현지화입니다. 자세한 파생 출처는 [NOTICE](NOTICE)를 확인해 주세요.
+
+## Maintenance verification
+
+`powershell -NoProfile -File tests/apply-localization.test.ps1` applies only to temporary fixture repositories. It checks a late read-only destination failure restores original file bytes, `-WhatIf` changes nothing, a successful installation is complete and repeatable, and incompatible upstream blocks are rejected before writes.
+
+The installer captures all previous files before writing. On a write failure it attempts each restoration; if restoration is incomplete, it retains the previous bytes with `recovery.json` and reports the backup directory. This protects catchable failures, not concurrent installations or abrupt process termination. `npm test` separately validates Korean catalog structure and TypeScript compatibility against the pinned upstream; it does not run an installed Hermes Desktop GUI.
